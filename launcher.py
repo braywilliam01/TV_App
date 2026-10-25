@@ -24,7 +24,8 @@ from pathlib import Path
 import yaml
 from PySide6.QtCore import (QDateTime, QFileSystemWatcher, QObject, QPoint, QPointF, QRect, QRectF, QRegularExpression,
                             QSize, Qt, QTimer, QUrl, Signal)
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+from PySide6.QtNetwork import (QLocalServer, QLocalSocket, QNetworkAccessManager, QNetworkReply,
+                               QNetworkRequest)
 from PySide6.QtGui import (QColor, QCursor, QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
                            QPixmap, QShortcut, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextFormat, QTransform)
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTextEdit,
@@ -53,7 +54,8 @@ DEFAULTS = {
     "sleep_command": "systemctl suspend",
 }
 SETTING_KEYS = set(DEFAULTS) | set(COLOR_KEYS)
-APP_KEYS = {"name", "command", "url", "icon"}
+APP_KEYS = {"name", "command", "url", "action", "icon"}
+ACTIONS = {"minimize": "hide the launcher and show the desktop"}   # built-in `action:` values
 GROUP_KEYS = {"name", "icon", "apps"}
 BACK_ITEM = {"name": "Back", "_back": True}   # first tile on every group screen
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".bmp", ".ico"}
@@ -234,8 +236,19 @@ def _check_items(items, nodes, group, base_dir, warnings, missing):
             apps.append({**app, "apps": _check_items(children, _child_nodes(node), path, base_dir, warnings, missing)})
             continue
 
-        if not (app.get("command") or app.get("url")):
+        if not (app.get("command") or app.get("url") or app.get("action")):
             raise ConfigError(f"App {label} needs a 'command:' or 'url:' (or 'apps:' to make it a group)", line)
+        if app.get("action"):
+            if str(app["action"]) not in ACTIONS:
+                raise ConfigError(f"App {label}: unknown action '{app['action']}'. Options: {', '.join(ACTIONS)}", line)
+            if app.get("command") or app.get("url"):
+                warnings.append(f"App {label}: has an action, so command/url is ignored")
+            for key in app:
+                if key not in APP_KEYS:
+                    warnings.append(f"App {label}: unknown key '{key}'")
+            _check_icon(app, f"App {label}", base_dir, warnings, missing)
+            apps.append(app)
+            continue
         if app.get("command") and app.get("url"):
             warnings.append(f"App {label} has both command and url; command is used")
         for key in app:
@@ -1261,6 +1274,9 @@ class Launcher(QWidget):
             self.enter_group(tile)
             return
         app = tile.app
+        if app.get("action") == "minimize":
+            self.minimize()
+            return
         if app.get("command"):
             command = app["command"]
         else:
@@ -1294,6 +1310,21 @@ class Launcher(QWidget):
         doing = {"shutdown": "Shutting down", "restart": "Restarting", "sleep": "Going to sleep"}[kind]
         if self.run(self.settings[f"{kind}_command"], doing.lower()):
             self.show_status(f"{doing}…", sticky=True)
+
+    def minimize(self):
+        # Remember fullscreen ourselves: some window managers drop it while minimized.
+        self.was_fullscreen = self.isFullScreen() or bool(self.settings.get("fullscreen", True))
+        self.showMinimized()
+
+    def bring_back(self):
+        """Restore from minimized (used when "TV Launcher" is opened again from the app menu)."""
+        if getattr(self, "was_fullscreen", self.settings.get("fullscreen", True)):
+            self.showFullScreen()
+        else:
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.setFocus()
 
     def exit_launcher(self):
         self.menu.close_menu()
@@ -1349,11 +1380,40 @@ class Launcher(QWidget):
             self.status_timer.start(5000)
 
 
+def instance_name():
+    return f"tv-launcher-{os.environ.get('USER') or os.environ.get('USERNAME') or 'user'}"
+
+
+def ask_running_instance_to_show(name=None):
+    """If the launcher is already running, tell it to come back to the front. Returns True if it was."""
+    socket = QLocalSocket()
+    socket.connectToServer(name or instance_name())
+    if not socket.waitForConnected(500):
+        return False
+    socket.write(b"show")
+    socket.waitForBytesWritten(500)
+    socket.disconnectFromServer()
+    return True
+
+
+def listen_for_other_instances(window, name=None):
+    """Opening the launcher again (e.g. from the app menu) brings this one back instead of starting a second copy."""
+    name = name or instance_name()
+    server = QLocalServer(window)
+    QLocalServer.removeServer(name)   # clean up after a crash
+    server.newConnection.connect(lambda: (server.nextPendingConnection().deleteLater(), window.bring_back()))
+    server.listen(name)
+    return server
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("tv-launcher")
     app.setDesktopFileName("tv-launcher")
+    if ask_running_instance_to_show():
+        return
     window = Launcher(find_config(sys.argv))
+    listen_for_other_instances(window)
     if window.settings.get("fullscreen", True):
         window.showFullScreen()
     else:

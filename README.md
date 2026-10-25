@@ -56,6 +56,19 @@ apps:
     icon: icons/youtube.png
 ```
 
+### Minimize to desktop
+
+The default list includes a **Desktop** tile that hides the launcher and shows the KDE desktop:
+
+```yaml
+  - name: Desktop
+    action: minimize
+    icon: user-desktop
+```
+
+To get back, open **TV Launcher** from the app menu or taskbar. It brings the running launcher back
+(fullscreen) instead of starting a second copy.
+
 ### Icons (optional)
 
 `icon:` can be left out (the tile shows the first letter), or be any of:

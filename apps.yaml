@@ -6,6 +6,9 @@
 #   command: what to run (anything you could type in a terminal)
 #     - or -
 #   url:     a web page, opened with `settings.browser`
+#     - or -
+#   action:  a built-in action. `minimize` hides the launcher and shows the desktop
+#            (open "TV Launcher" from the app menu or taskbar to bring it back)
 #   icon:    (optional) any of:
 #              - a local image, relative to this file:  icons/netflix.png  (or a full path)
 #              - a web image:  https://example.com/logo.png  (downloaded once, then kept offline)
@@ -70,3 +73,7 @@ apps:
   - name: Firefox
     command: flatpak run org.mozilla.firefox
     icon: org.mozilla.firefox
+
+  - name: Desktop
+    action: minimize
+    icon: user-desktop
