@@ -56,7 +56,19 @@ apps:
     icon: icons/youtube.png
 ```
 
-Put your own icon images in `~/.config/tv-launcher/icons/`. Without an icon, the tile shows the first letter.
+### Icons (optional)
+
+`icon:` can be left out (the tile shows the first letter), or be any of:
+
+| Kind | Example |
+|---|---|
+| Local image (relative to `apps.yaml`, or a full path) | `icon: icons/netflix.png` |
+| Web image | `icon: https://example.com/netflix.png` |
+| Installed app's icon name | `icon: tv.kodi.Kodi` |
+
+Put local images in `~/.config/tv-launcher/icons/`. Web images download in the background and are kept in
+`~/.cache/tv-launcher/icons/`, so they work offline afterwards. Delete that folder to fetch fresh copies.
+A broken link or a non-image just shows the letter and a warning; Settings > Reload apps retries it.
 
 ### Groups (secondary screens)
 

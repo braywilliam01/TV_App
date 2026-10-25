@@ -10,6 +10,7 @@ Keys:  arrows move, Enter/Space/OK open, Home jumps to first tile,
        Back/Esc leaves a group (and does nothing on the home screen),
        F5 reloads the YAML, Ctrl+Q quits.
 """
+import hashlib
 import math
 import os
 import re
@@ -21,7 +22,9 @@ import time
 from pathlib import Path
 
 import yaml
-from PySide6.QtCore import QDateTime, QFileSystemWatcher, QPoint, QPointF, QRect, QRectF, QRegularExpression, QSize, Qt, QTimer
+from PySide6.QtCore import (QDateTime, QFileSystemWatcher, QObject, QPoint, QPointF, QRect, QRectF, QRegularExpression,
+                            QSize, Qt, QTimer, QUrl, Signal)
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtGui import (QColor, QCursor, QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
                            QPixmap, QShortcut, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextFormat, QTransform)
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTextEdit,
@@ -54,6 +57,8 @@ APP_KEYS = {"name", "command", "url", "icon"}
 GROUP_KEYS = {"name", "icon", "apps"}
 BACK_ITEM = {"name": "Back", "_back": True}   # first tile on every group screen
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".bmp", ".ico"}
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "tv-launcher" / "icons"
+MAX_ICON_BYTES = 5 * 1024 * 1024
 OK_COLOR, WARN_COLOR, ERROR_COLOR = "#4cd480", "#ffb84d", "#ff6b6b"
 
 LAUNCH_KEYS = {Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Select}
@@ -183,9 +188,17 @@ def _child_nodes(node):
     return []
 
 
-def _check_icon(app, label, base_dir, missing):
+def is_web_url(spec):
+    return bool(re.match(r"^https?://", str(spec), re.IGNORECASE))
+
+
+def _check_icon(app, label, base_dir, warnings, missing):
     icon = app.get("icon")
-    if icon and Path(str(icon)).suffix.lower() in IMAGE_SUFFIXES:
+    if not icon or is_web_url(icon):
+        return   # optional; web images are checked when they download
+    if "://" in str(icon):
+        warnings.append(f"{label}: icon link should start with https:// (or use a local file)")
+    elif Path(str(icon)).suffix.lower() in IMAGE_SUFFIXES:
         path = Path(str(icon)).expanduser()
         if not (path if path.is_absolute() else base_dir / path).is_file():
             missing.append(f"{label}: icon file '{icon}' not found")
@@ -216,7 +229,7 @@ def _check_items(items, nodes, group, base_dir, warnings, missing):
             for key in app:
                 if key not in GROUP_KEYS | {"command", "url"}:
                     warnings.append(f"Group {label}: unknown key '{key}'")
-            _check_icon(app, f"Group {label}", base_dir, missing)
+            _check_icon(app, f"Group {label}", base_dir, warnings, missing)
             path = f"{group} › {app['name']}" if group else str(app["name"])
             apps.append({**app, "apps": _check_items(children, _child_nodes(node), path, base_dir, warnings, missing)})
             continue
@@ -239,7 +252,7 @@ def _check_items(items, nodes, group, base_dir, warnings, missing):
                 missing.append(f"App {label}: program '{argv[0]}' not found")
         elif "://" not in str(app["url"]):
             warnings.append(f"App {label}: url should start with https://")
-        _check_icon(app, f"App {label}", base_dir, missing)
+        _check_icon(app, f"App {label}", base_dir, warnings, missing)
         apps.append(app)
     return apps
 
@@ -300,6 +313,73 @@ def load_icon(spec, base_dir):
     return None if pix.isNull() else pix
 
 
+class WebIcons(QObject):
+    """Downloads icon images in the background and keeps them on disk, so they also work offline."""
+    loaded = Signal(str, QPixmap)
+    failed = Signal(str, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.net = QNetworkAccessManager(self)
+        self.pending = set()
+        self.broken = {}   # url -> reason; not retried until retry_failed()
+
+    @staticmethod
+    def cache_path(url):
+        return CACHE_DIR / (hashlib.sha1(url.encode("utf-8")).hexdigest() + ".img")
+
+    def get(self, url):
+        """Return the cached image, or None and start downloading it (`loaded` fires when done)."""
+        path = self.cache_path(url)
+        if path.is_file():
+            pix = QPixmap()
+            if pix.loadFromData(path.read_bytes()):
+                return pix
+        if url not in self.pending and url not in self.broken:
+            self.pending.add(url)
+            request = QNetworkRequest(QUrl(url))
+            request.setTransferTimeout(15_000)
+            request.setHeader(QNetworkRequest.UserAgentHeader, "tv-launcher")
+            reply = self.net.get(request)
+            reply.downloadProgress.connect(lambda got, _total, r=reply: self._limit(r, got))
+            reply.finished.connect(lambda r=reply, u=url: self._done(r, u))
+        return None
+
+    def retry_failed(self):
+        self.broken.clear()
+
+    def _limit(self, reply, received):
+        if received > MAX_ICON_BYTES:
+            reply.setProperty("too_big", True)
+            reply.abort()
+
+    def _done(self, reply, url):
+        self.pending.discard(url)
+        reply.deleteLater()
+        if reply.property("too_big"):
+            reason = "image is bigger than 5 MB"
+        elif reply.error() != QNetworkReply.NoError:
+            status = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+            phrase = reply.attribute(QNetworkRequest.HttpReasonPhraseAttribute) or ""
+            reason = f"the website replied {status} {phrase}".strip() if status else reply.errorString()
+        else:
+            data = bytes(reply.readAll())
+            pix = QPixmap()
+            if pix.loadFromData(data):
+                try:
+                    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                    tmp = self.cache_path(url).with_suffix(".tmp")
+                    tmp.write_bytes(data)
+                    os.replace(tmp, self.cache_path(url))
+                except OSError:
+                    pass   # still show it, just not cached
+                self.loaded.emit(url, pix)
+                return
+            reason = "the link isn't an image"
+        self.broken[url] = reason
+        self.failed.emit(url, reason)
+
+
 def fit_grid(n, width, height, gap, columns):
     """Pick the column count that gives the biggest square tiles."""
     if n == 0:
@@ -333,7 +413,8 @@ class Tile(QFrame):
         self.setProperty("focused", False)
         self.is_back = bool(app.get("_back"))
         self.is_group = "apps" in app
-        self.pixmap = load_icon(app.get("icon"), base_dir)
+        self.side = 0
+        self.pixmap = launcher.icon_for(app.get("icon"), base_dir)
 
         self.icon = QLabel(alignment=Qt.AlignCenter)
         self.icon.setObjectName("icon")
@@ -353,7 +434,14 @@ class Tile(QFrame):
         layout.addWidget(self.detail)
         layout.addStretch(1)
 
+    def set_pixmap(self, pixmap):
+        """Swap in an icon that finished downloading."""
+        self.pixmap = pixmap
+        if self.side:
+            self.set_side(self.side)
+
     def set_side(self, side):
+        self.side = side
         self.setFixedSize(side, side)
         icon_side = int(side * (0.5 if self.is_group else 0.58))
         font = self.name.font()
@@ -854,6 +942,9 @@ class Launcher(QWidget):
         root.addWidget(self.grid, 1)
         root.addWidget(self.status)
 
+        self.web_icons = WebIcons(self)
+        self.web_icons.loaded.connect(self.icon_loaded)
+        self.web_icons.failed.connect(self.icon_failed)
         self.menu = MenuOverlay(self)
         self.editor = EditorOverlay(self)
 
@@ -881,6 +972,7 @@ class Launcher(QWidget):
             return
         self.settings = settings
         self.apps = apps
+        self.web_icons.retry_failed()   # a reload is the way to retry broken icon links
         self.build_tiles()
 
         self.clock.setVisible(bool(settings["show_clock"]))
@@ -924,6 +1016,26 @@ class Launcher(QWidget):
         self.title.setText("  ›  ".join([str(self.settings["title"]), *self.path]).strip(" ›"))
         self.layout_tiles()
         self.refresh_focus()
+
+    def icon_for(self, spec, base_dir):
+        if spec and is_web_url(spec):
+            return self.web_icons.get(str(spec))
+        return load_icon(spec, base_dir)
+
+    def icon_loaded(self, url, pixmap):
+        for tile in self.tiles:
+            if str(tile.app.get("icon")) == url:
+                tile.set_pixmap(pixmap)
+
+    def icon_failed(self, url, reason):
+        def find(items):
+            for app in items:
+                if str(app.get("icon")) == url:
+                    return app["name"]
+                found = find(app.get("apps") or [])
+                if found:
+                    return found
+        self.show_status(f"Couldn't download the icon for {find(self.apps) or url}: {reason}", level="warn")
 
     def enter_group(self, tile):
         self.parent_indexes.append(self.index)

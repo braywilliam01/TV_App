@@ -6,8 +6,10 @@
 #   command: what to run (anything you could type in a terminal)
 #     - or -
 #   url:     a web page, opened with `settings.browser`
-#   icon:    (optional) an image path relative to this file, e.g. icons/netflix.png,
-#            or an installed app's icon name (Flatpak apps use their ID, e.g. tv.kodi.Kodi).
+#   icon:    (optional) any of:
+#              - a local image, relative to this file:  icons/netflix.png  (or a full path)
+#              - a web image:  https://example.com/logo.png  (downloaded once, then kept offline)
+#              - an installed app's icon name (Flatpak apps use their ID, e.g. tv.kodi.Kodi)
 #            No icon = the first letter of the name is shown.
 #
 # Groups: give an entry its own `apps:` list instead of a command. It becomes a tile that
