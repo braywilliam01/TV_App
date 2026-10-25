@@ -3,6 +3,9 @@
 
 Built for an air remote: arrow keys / D-pad move between tiles, Enter/OK opens
 the app, and pointing + clicking works too. Edit the YAML and the grid reloads.
+A connected gamepad works too (D-pad/left stick to move, A to open, B to go
+back, Start for Settings) -- optional, needs the `pysdl2` package and a
+system libSDL2; silently does nothing without either.
 
 Usage: launcher.py [path/to/apps.yaml]
 Keys:  arrows move, Enter/Space/OK open, Home jumps to first tile,
@@ -27,10 +30,16 @@ from PySide6.QtCore import (QDateTime, QEvent, QFileSystemWatcher, QObject, QPoi
                             QRegularExpression, QSize, Qt, QTimer, QUrl, Signal)
 from PySide6.QtNetwork import (QLocalServer, QLocalSocket, QNetworkAccessManager, QNetworkReply,
                                QNetworkRequest)
-from PySide6.QtGui import (QColor, QCursor, QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
-                           QPixmap, QShortcut, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextFormat, QTransform)
+from PySide6.QtGui import (QColor, QCursor, QFont, QFontDatabase, QIcon, QKeyEvent, QKeySequence, QPainter,
+                           QPainterPath, QPen, QPixmap, QShortcut, QSyntaxHighlighter, QTextCharFormat, QTextCursor,
+                           QTextFormat, QTransform)
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QTextEdit,
                                QVBoxLayout, QWidget)
+
+try:
+    import sdl2   # optional: gamepad support. Missing package or no system libSDL2 -> just no gamepad.
+except Exception:
+    sdl2 = None
 
 THEMES = {
     "midnight": {"background": "#0f1216", "tile": "#1b2027", "accent": "#3d9cff", "text": "#e8ecf1"},
@@ -74,6 +83,7 @@ OK_COLOR, WARN_COLOR, ERROR_COLOR = "#4cd480", "#ffb84d", "#ff6b6b"
 LAUNCH_KEYS = {Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Select}
 BACK_KEYS = {Qt.Key_Escape, Qt.Key_Back, Qt.Key_Backspace}
 MOVE_KEYS = {Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0), Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1)}
+MOVE_KEY_FOR_DIRECTION = {v: k for k, v in MOVE_KEYS.items()}   # (dx, dy) -> Qt key, for the gamepad
 POINTER_WAKE_DISTANCE = 40   # px the pointer must move before hover takes over from the D-pad
 LAUNCH_DEBOUNCE = 1.5        # seconds; stops a double-press opening an app twice
 MOUSE_IDLE_HIDE = 10         # seconds; blank a visible pointer once it's sat still this long
@@ -1069,6 +1079,132 @@ class ScreensaverOverlay(QWidget):
         self.dismiss()
 
 
+# ---- gamepad --------------------------------------------------------------------
+
+GAMEPAD_POLL_MS = 50
+GAMEPAD_DEADZONE = 0.4      # fraction of full stick travel before a direction registers
+GAMEPAD_REPEAT_DELAY = 0.4  # seconds a direction must be held before it starts repeating
+GAMEPAD_REPEAT_RATE = 0.15  # seconds between repeats after that (mirrors OS key auto-repeat)
+# SDL_CONTROLLER_BUTTON_* -> Qt key, Xbox-style layout (A confirms, B goes back). Built
+# lazily since the sdl2 module (and its constants) may not exist at import time.
+def _gamepad_button_keys():
+    return {
+        sdl2.SDL_CONTROLLER_BUTTON_A: Qt.Key_Return,
+        sdl2.SDL_CONTROLLER_BUTTON_B: Qt.Key_Escape,
+        sdl2.SDL_CONTROLLER_BUTTON_START: Qt.Key_Menu,
+    }
+
+
+def gamepad_stick_direction(x, y, deadzone=GAMEPAD_DEADZONE):
+    """Pure function: normalized stick axes (-1..1) -> a MOVE_KEYS-style (dx, dy), or None."""
+    if abs(x) < deadzone and abs(y) < deadzone:
+        return None
+    return (1, 0) if x > 0 else (-1, 0) if abs(x) >= abs(y) else (0, 1) if y > 0 else (0, -1)
+
+
+def gamepad_dpad_direction(up, down, left, right):
+    """Pure function: D-pad button states -> a MOVE_KEYS-style (dx, dy), or None."""
+    if up:
+        return (0, -1)
+    if down:
+        return (0, 1)
+    if left:
+        return (-1, 0)
+    if right:
+        return (1, 0)
+    return None
+
+
+class DirectionRepeater:
+    """Edge+repeat logic for a held D-pad/stick direction, mirroring OS keyboard auto-repeat:
+    a fresh direction fires immediately, then repeats at GAMEPAD_REPEAT_RATE after an initial
+    GAMEPAD_REPEAT_DELAY. Pure state machine -- no SDL/hardware dependency, fully testable."""
+
+    def __init__(self):
+        self.direction = None
+        self.next_repeat = 0.0
+
+    def tick(self, direction, now):
+        if direction != self.direction:
+            self.direction = direction
+            self.next_repeat = now + GAMEPAD_REPEAT_DELAY
+            return direction
+        if direction and now >= self.next_repeat:
+            self.next_repeat = now + GAMEPAD_REPEAT_RATE
+            return direction
+        return None
+
+
+class GamepadInput:
+    """Polls SDL2 game controllers and feeds the same key events the D-pad/air-remote
+    already use through Qt's normal event dispatch -- so navigation, pointer-hiding,
+    the settings menu and the YAML editor all just work, with no gamepad-specific
+    duplicate logic anywhere else. Entirely optional: does nothing if `sdl2` isn't
+    installed, if SDL's controller subsystem fails to start, or if nothing is ever
+    plugged in.
+    """
+
+    def __init__(self, launcher):
+        self.launcher = launcher
+        self.controllers = {}   # SDL instance id -> SDL_GameController*
+        self.held_buttons = {}  # SDL instance id -> set of currently-held button indices
+        self.repeaters = {}     # SDL instance id -> DirectionRepeater
+        self.timer = None
+        if sdl2 is None:
+            return
+        try:
+            if sdl2.SDL_Init(sdl2.SDL_INIT_GAMECONTROLLER) != 0:
+                return
+            self.button_keys = _gamepad_button_keys()
+        except Exception:
+            return
+        self.timer = QTimer(launcher, timeout=self.poll, interval=GAMEPAD_POLL_MS)
+        self.timer.start()
+
+    def poll(self):
+        sdl2.SDL_GameControllerUpdate()
+        self._scan_new_controllers()
+        now = time.monotonic()
+        for iid, pad in list(self.controllers.items()):
+            if not sdl2.SDL_GameControllerGetAttached(pad):
+                del self.controllers[iid]
+                self.held_buttons.pop(iid, None)
+                self.repeaters.pop(iid, None)
+                continue
+            self._poll_direction(iid, pad, now)
+            self._poll_buttons(iid, pad)
+
+    def _scan_new_controllers(self):
+        for i in range(sdl2.SDL_NumJoysticks()):
+            if sdl2.SDL_IsGameController(i):
+                iid = sdl2.SDL_JoystickGetDeviceInstanceID(i)
+                if iid not in self.controllers:
+                    pad = sdl2.SDL_GameControllerOpen(i)
+                    if pad:
+                        self.controllers[iid] = pad
+                        self.repeaters[iid] = DirectionRepeater()
+
+    def _poll_direction(self, iid, pad, now):
+        dpad = gamepad_dpad_direction(
+            sdl2.SDL_GameControllerGetButton(pad, sdl2.SDL_CONTROLLER_BUTTON_DPAD_UP),
+            sdl2.SDL_GameControllerGetButton(pad, sdl2.SDL_CONTROLLER_BUTTON_DPAD_DOWN),
+            sdl2.SDL_GameControllerGetButton(pad, sdl2.SDL_CONTROLLER_BUTTON_DPAD_LEFT),
+            sdl2.SDL_GameControllerGetButton(pad, sdl2.SDL_CONTROLLER_BUTTON_DPAD_RIGHT))
+        x = sdl2.SDL_GameControllerGetAxis(pad, sdl2.SDL_CONTROLLER_AXIS_LEFTX) / 32768.0
+        y = sdl2.SDL_GameControllerGetAxis(pad, sdl2.SDL_CONTROLLER_AXIS_LEFTY) / 32768.0
+        direction = dpad or gamepad_stick_direction(x, y)
+        fire = self.repeaters[iid].tick(direction, now)
+        if fire:
+            self.launcher.send_key(MOVE_KEY_FOR_DIRECTION[fire])
+
+    def _poll_buttons(self, iid, pad):
+        held = {b for b in self.button_keys if sdl2.SDL_GameControllerGetButton(pad, b)}
+        pressed = held - self.held_buttons.get(iid, set())
+        self.held_buttons[iid] = held
+        for b in pressed:
+            self.launcher.send_key(self.button_keys[b])
+
+
 # ---- main window --------------------------------------------------------------
 
 class Launcher(QWidget):
@@ -1117,6 +1253,7 @@ class Launcher(QWidget):
         self.menu = MenuOverlay(self)
         self.editor = EditorOverlay(self)
         self.screensaver = ScreensaverOverlay(self)
+        self.gamepad = GamepadInput(self)
 
         self.clock_timer = QTimer(self, timeout=self.update_clock, interval=15_000)
         self.status_timer = QTimer(self, singleShot=True, timeout=lambda: self.status.setText(""))
@@ -1415,6 +1552,16 @@ class Launcher(QWidget):
             return   # another app has focus; don't steal it back
         if time.monotonic() - self.last_input >= minutes * 60:
             self.screensaver.start()
+
+    # ---- gamepad ------------------------------------------------------------
+
+    def send_key(self, qt_key):
+        """Feed a synthetic key press through whichever widget actually has focus right
+        now (the grid, the settings menu, or the YAML editor) -- exactly as a real key
+        press would be routed -- so a gamepad behaves identically to the keyboard/D-pad
+        everywhere in the app, with zero gamepad-specific navigation code anywhere else."""
+        target = QApplication.focusWidget() or self
+        QApplication.sendEvent(target, QKeyEvent(QEvent.KeyPress, qt_key, Qt.NoModifier))
 
     def hover(self, tile):
         if self.pointer_mode and tile in self.tiles:

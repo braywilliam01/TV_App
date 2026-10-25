@@ -33,6 +33,14 @@ Nothing needs root; everything installs into your home folder.
 Pointing and clicking with the air mouse works too. After using the D-pad the pointer hides, so air-mouse wobble
 doesn't move the selection.
 
+### Gamepad (optional)
+
+A connected Xbox-style controller works the same as the keyboard/D-pad: left stick or D-pad to move
+(repeats while held), **A** to open, **B** to go back, **Start** for Settings. It's entirely optional and
+needs the `pysdl2` package plus a system libSDL2 (already present on most gaming-oriented Linux setups,
+Bazzite included) -- without either, the launcher just runs exactly as before. Hot-plugging is supported;
+no restart needed.
+
 ## Settings menu
 
 - **Themes:** Midnight, Ocean, Forest, Sunset, Light, High Contrast
