@@ -1,0 +1,60 @@
+# TV Launcher config. Save this file and the launcher reloads by itself.
+# You can also edit it on the TV: Settings (gear, top right) > Edit apps.
+#
+# Each app needs:
+#   name:    text under the tile
+#   command: what to run (anything you could type in a terminal)
+#     - or -
+#   url:     a web page, opened with `settings.browser`
+#   icon:    (optional) an image path relative to this file, e.g. icons/netflix.png,
+#            or an installed app's icon name (Flatpak apps use their ID, e.g. tv.kodi.Kodi).
+#            No icon = the first letter of the name is shown.
+
+settings:
+  title: "Living Room"
+  theme: midnight          # midnight, ocean, forest, sunset, light, contrast (or pick in Settings > Themes)
+  columns: auto            # auto = fit the screen, or a number like 4
+  fullscreen: true
+  show_clock: true
+  # Opens `url:` apps. Kiosk mode = fullscreen with no browser bars (exit with Alt+F4).
+  browser: "flatpak run org.mozilla.firefox --kiosk"
+
+  # Optional: override single theme colours.
+  # accent: "#3d9cff"
+  # background: "#0f1216"
+  # tile: "#1b2027"
+  # text: "#e8ecf1"
+
+  # Optional: power commands used by the Settings menu (these are the defaults).
+  # shutdown_command: systemctl poweroff
+  # restart_command: systemctl reboot
+  # sleep_command: systemctl suspend
+
+apps:
+  - name: Steam
+    command: steam steam://open/bigpicture
+    icon: steam
+
+  - name: RetroDECK
+    command: flatpak run net.retrodeck.retrodeck
+    icon: net.retrodeck.retrodeck
+
+  - name: Kodi
+    command: flatpak run tv.kodi.Kodi
+    icon: tv.kodi.Kodi
+
+  - name: Jellyfin
+    command: flatpak run com.github.iwalton3.jellyfin-media-player
+    icon: com.github.iwalton3.jellyfin-media-player
+
+  - name: YouTube
+    url: https://www.youtube.com
+    icon: icons/youtube.png
+
+  - name: Netflix
+    url: https://www.netflix.com
+    icon: icons/netflix.png
+
+  - name: Firefox
+    command: flatpak run org.mozilla.firefox
+    icon: org.mozilla.firefox
