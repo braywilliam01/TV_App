@@ -9,6 +9,10 @@
 #   icon:    (optional) an image path relative to this file, e.g. icons/netflix.png,
 #            or an installed app's icon name (Flatpak apps use their ID, e.g. tv.kodi.Kodi).
 #            No icon = the first letter of the name is shown.
+#
+# Groups: give an entry its own `apps:` list instead of a command. It becomes a tile that
+# opens a second screen with those apps (Back or the "‹ Back" tile returns). Groups can
+# contain groups.
 
 settings:
   title: "Living Room"
@@ -31,14 +35,6 @@ settings:
   # sleep_command: systemctl suspend
 
 apps:
-  - name: Steam
-    command: steam steam://open/bigpicture
-    icon: steam
-
-  - name: RetroDECK
-    command: flatpak run net.retrodeck.retrodeck
-    icon: net.retrodeck.retrodeck
-
   - name: Kodi
     command: flatpak run tv.kodi.Kodi
     icon: tv.kodi.Kodi
@@ -47,13 +43,27 @@ apps:
     command: flatpak run com.github.iwalton3.jellyfin-media-player
     icon: com.github.iwalton3.jellyfin-media-player
 
-  - name: YouTube
-    url: https://www.youtube.com
-    icon: icons/youtube.png
+  - name: Games
+    icon: icons/games.png
+    apps:
+      - name: Steam
+        command: steam steam://open/bigpicture
+        icon: steam
 
-  - name: Netflix
-    url: https://www.netflix.com
-    icon: icons/netflix.png
+      - name: RetroDECK
+        command: flatpak run net.retrodeck.retrodeck
+        icon: net.retrodeck.retrodeck
+
+  - name: Streaming
+    icon: icons/streaming.png
+    apps:
+      - name: YouTube
+        url: https://www.youtube.com
+        icon: icons/youtube.png
+
+      - name: Netflix
+        url: https://www.netflix.com
+        icon: icons/netflix.png
 
   - name: Firefox
     command: flatpak run org.mozilla.firefox

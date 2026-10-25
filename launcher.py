@@ -7,7 +7,8 @@ the app, and pointing + clicking works too. Edit the YAML and the grid reloads.
 Usage: launcher.py [path/to/apps.yaml]
 Keys:  arrows move, Enter/Space/OK open, Home jumps to first tile,
        Up from the top row (or the Menu key) reaches Settings,
-       F5 reloads the YAML, Ctrl+Q quits. Back/Esc on the grid does nothing on purpose.
+       Back/Esc leaves a group (and does nothing on the home screen),
+       F5 reloads the YAML, Ctrl+Q quits.
 """
 import math
 import os
@@ -50,6 +51,8 @@ DEFAULTS = {
 }
 SETTING_KEYS = set(DEFAULTS) | set(COLOR_KEYS)
 APP_KEYS = {"name", "command", "url", "icon"}
+GROUP_KEYS = {"name", "icon", "apps"}
+BACK_ITEM = {"name": "Back", "_back": True}   # first tile on every group screen
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".bmp", ".ico"}
 OK_COLOR, WARN_COLOR, ERROR_COLOR = "#4cd480", "#ffb84d", "#ff6b6b"
 
@@ -83,19 +86,6 @@ def to_argv(command):
 
 def theme_label(name):
     return THEME_LABELS.get(name, name.title())
-
-
-def _app_lines(text):
-    """Line number of each item under `apps:`, so errors can point at the right place."""
-    try:
-        root = yaml.compose(text)
-    except yaml.YAMLError:
-        return []
-    if isinstance(root, yaml.MappingNode):
-        for key, value in root.value:
-            if getattr(key, "value", None) == "apps" and isinstance(value, yaml.SequenceNode):
-                return [item.start_mark.line + 1 for item in value.value]
-    return []
 
 
 def _likely_mistake(text, error_line):
@@ -175,19 +165,64 @@ def parse_config(text, base_dir):
     items = data.get("apps") or []
     if not isinstance(items, list):
         raise ConfigError("'apps:' should be a list (each app starts with '- name:')")
-    lines = _app_lines(text)
-    apps = []
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError:
+        root = None
     missing = []   # "not found" warnings go last so typos stay visible
+    apps = _check_items(items, _child_nodes(root), "", base_dir, warnings, missing)
+    return settings, apps, warnings + missing
+
+
+def _child_nodes(node):
+    """The YAML nodes of the items under a mapping's `apps:` key (used for line numbers)."""
+    if isinstance(node, yaml.MappingNode):
+        for key, value in node.value:
+            if getattr(key, "value", None) == "apps" and isinstance(value, yaml.SequenceNode):
+                return value.value
+    return []
+
+
+def _check_icon(app, label, base_dir, missing):
+    icon = app.get("icon")
+    if icon and Path(str(icon)).suffix.lower() in IMAGE_SUFFIXES:
+        path = Path(str(icon)).expanduser()
+        if not (path if path.is_absolute() else base_dir / path).is_file():
+            missing.append(f"{label}: icon file '{icon}' not found")
+
+
+def _check_items(items, nodes, group, base_dir, warnings, missing):
+    """Validate a list of apps and groups (an entry with its own `apps:` list), recursively."""
+    apps = []
     for i, app in enumerate(items):
-        line = lines[i] if i < len(lines) else None
+        node = nodes[i] if i < len(nodes) else None
+        line = node.start_mark.line + 1 if node is not None else None
         at = f" (line {line})" if line else ""
+        inside = f" in {group}" if group else ""
         if not isinstance(app, dict):
-            raise ConfigError(f"App #{i + 1}{at} should have 'name:' and 'command:' or 'url:'", line)
+            raise ConfigError(f"App #{i + 1}{inside}{at} should have 'name:' and 'command:' or 'url:'", line)
         if not app.get("name"):
-            raise ConfigError(f"App #{i + 1}{at} needs a 'name:'", line)
-        label = f"'{app['name']}'{at}"
+            raise ConfigError(f"App #{i + 1}{inside}{at} needs a 'name:'", line)
+        label = f"'{app['name']}'{inside}{at}"
+
+        if "apps" in app:
+            children = app["apps"] if app["apps"] is not None else []
+            if not isinstance(children, list):
+                raise ConfigError(f"Group {label}: 'apps:' should be a list (each app starts with '- name:')", line)
+            if not children:
+                warnings.append(f"Group {label} has no apps yet")
+            if app.get("command") or app.get("url"):
+                warnings.append(f"Group {label}: command/url ignored (a group opens its own apps)")
+            for key in app:
+                if key not in GROUP_KEYS | {"command", "url"}:
+                    warnings.append(f"Group {label}: unknown key '{key}'")
+            _check_icon(app, f"Group {label}", base_dir, missing)
+            path = f"{group} › {app['name']}" if group else str(app["name"])
+            apps.append({**app, "apps": _check_items(children, _child_nodes(node), path, base_dir, warnings, missing)})
+            continue
+
         if not (app.get("command") or app.get("url")):
-            raise ConfigError(f"App {label} needs a 'command:' or 'url:'", line)
+            raise ConfigError(f"App {label} needs a 'command:' or 'url:' (or 'apps:' to make it a group)", line)
         if app.get("command") and app.get("url"):
             warnings.append(f"App {label} has both command and url; command is used")
         for key in app:
@@ -204,13 +239,9 @@ def parse_config(text, base_dir):
                 missing.append(f"App {label}: program '{argv[0]}' not found")
         elif "://" not in str(app["url"]):
             warnings.append(f"App {label}: url should start with https://")
-        icon = app.get("icon")
-        if icon and Path(str(icon)).suffix.lower() in IMAGE_SUFFIXES:
-            path = Path(str(icon)).expanduser()
-            if not (path if path.is_absolute() else base_dir / path).is_file():
-                missing.append(f"App {label}: icon file '{icon}' not found")
+        _check_icon(app, f"App {label}", base_dir, missing)
         apps.append(app)
-    return settings, apps, warnings + missing
+    return apps
 
 
 def load_config(path):
@@ -300,28 +331,38 @@ class Tile(QFrame):
         self.setObjectName("tile")
         self.setMouseTracking(True)
         self.setProperty("focused", False)
+        self.is_back = bool(app.get("_back"))
+        self.is_group = "apps" in app
         self.pixmap = load_icon(app.get("icon"), base_dir)
 
         self.icon = QLabel(alignment=Qt.AlignCenter)
         self.icon.setObjectName("icon")
         self.name = QLabel(str(app["name"]), alignment=Qt.AlignCenter)
         self.name.setObjectName("name")
-        for label in (self.icon, self.name):
+        count = len(app["apps"]) if self.is_group else 0
+        self.detail = QLabel(f"{count} app{'' if count == 1 else 's'}  ›", alignment=Qt.AlignCenter)
+        self.detail.setObjectName("detail")
+        self.detail.setVisible(self.is_group)
+        for label in (self.icon, self.name, self.detail):
             label.setAttribute(Qt.WA_TransparentForMouseEvents)
 
         layout = QVBoxLayout(self)
         layout.addStretch(1)
         layout.addWidget(self.icon)
         layout.addWidget(self.name)
+        layout.addWidget(self.detail)
         layout.addStretch(1)
 
     def set_side(self, side):
         self.setFixedSize(side, side)
-        icon_side = int(side * 0.58)
+        icon_side = int(side * (0.5 if self.is_group else 0.58))
         font = self.name.font()
         font.setPixelSize(max(12, int(side * 0.085)))
         font.setBold(True)
         self.name.setFont(font)
+        small = self.detail.font()
+        small.setPixelSize(max(10, int(side * 0.06)))
+        self.detail.setFont(small)
         if self.pixmap:
             self.icon.setPixmap(self.pixmap.scaled(
                 icon_side, icon_side, Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -331,7 +372,7 @@ class Tile(QFrame):
             letter.setPixelSize(max(16, int(icon_side * 0.6)))
             letter.setBold(True)
             self.icon.setFont(letter)
-            self.icon.setText(str(self.app["name"])[:1].upper())
+            self.icon.setText("‹" if self.is_back else str(self.app["name"])[:1].upper())
         self.icon.setFixedHeight(icon_side)
 
     def set_focused(self, focused):
@@ -348,6 +389,8 @@ class Tile(QFrame):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
             self.launcher.click(self)
+        elif event.button() == Qt.BackButton:
+            self.launcher.go_up()
 
 
 class GearButton(QWidget):
@@ -777,6 +820,9 @@ class Launcher(QWidget):
         super().__init__()
         self.config_path = config_path
         self.settings = resolve_settings({}, [])
+        self.apps = []             # whole tree from the YAML
+        self.path = []             # names of the groups we're inside, outermost first
+        self.parent_indexes = []   # where focus was on each parent screen
         self.tiles = []
         self.index = 0
         self.cols = 1
@@ -834,17 +880,9 @@ class Launcher(QWidget):
             self.show_status(f"{e}  (Settings › Edit apps to fix)", level="error", sticky=True)
             return
         self.settings = settings
-        for tile in self.tiles:
-            tile.deleteLater()
-        self.tiles = [Tile(app, self.config_path.parent, self) for app in apps]
-        for tile in self.tiles:
-            tile.setParent(self.grid)
-            tile.show()
-        self.index = min(self.index, max(0, len(self.tiles) - 1))
-        if not self.tiles:
-            self.focus_area = "gear"
+        self.apps = apps
+        self.build_tiles()
 
-        self.title.setText(str(settings["title"]))
         self.clock.setVisible(bool(settings["show_clock"]))
         if settings["show_clock"]:
             self.update_clock()
@@ -854,12 +892,53 @@ class Launcher(QWidget):
         self.apply_style()
         self.layout_tiles()
         self.refresh_focus()
-        if not self.tiles:
+        if not self.apps:
             self.show_status("No apps yet. Open Settings › Edit apps to add some.", sticky=True)
         elif warnings:
             self.show_status(f"{len(warnings)} warning(s): {warnings[0]}  (see Settings › Edit apps)", level="warn")
         else:
             self.status.setText("")
+
+    def current_items(self):
+        """Items on the current screen. Drops groups from the path that no longer exist (after a reload)."""
+        items = self.apps
+        for depth, name in enumerate(self.path):
+            group = next((a for a in items if "apps" in a and a["name"] == name), None)
+            if group is None:
+                self.index = self.parent_indexes[depth]
+                del self.path[depth:], self.parent_indexes[depth:]
+                break
+            items = group["apps"]
+        return [BACK_ITEM] + items if self.path else items
+
+    def build_tiles(self):
+        for tile in self.tiles:
+            tile.deleteLater()
+        self.tiles = [Tile(app, self.config_path.parent, self) for app in self.current_items()]
+        for tile in self.tiles:
+            tile.setParent(self.grid)
+            tile.show()
+        self.index = min(self.index, max(0, len(self.tiles) - 1))
+        if not self.tiles:
+            self.focus_area = "gear"
+        self.title.setText("  ›  ".join([str(self.settings["title"]), *self.path]).strip(" ›"))
+        self.layout_tiles()
+        self.refresh_focus()
+
+    def enter_group(self, tile):
+        self.parent_indexes.append(self.index)
+        self.path.append(tile.app["name"])
+        self.index = 1 if tile.app["apps"] else 0   # first app, not the Back tile
+        self.build_tiles()
+
+    def go_up(self):
+        if not self.path:
+            return False
+        self.path.pop()
+        self.index = self.parent_indexes.pop()
+        self.focus_area = "grid"
+        self.build_tiles()
+        return True
 
     def apply_style(self):
         s = self.settings
@@ -877,6 +956,7 @@ class Launcher(QWidget):
             QFrame#tile {{ background: {s['tile']}; border: 4px solid transparent; border-radius: 18px; }}
             QFrame#tile[focused="true"] {{ border-color: {s['accent']}; }}
             QFrame#tile[focused="true"] QLabel#name {{ color: {s['accent']}; }}
+            QLabel#detail {{ color: {muted_css}; }}
 
             QWidget#overlay {{ background: rgba(0, 0, 0, 150); }}
             QFrame#panel {{ background: {s['background']}; border: 2px solid {s['tile']}; border-radius: 20px; }}
@@ -976,6 +1056,8 @@ class Launcher(QWidget):
                 self.launch(self.tiles[self.index])
         elif key == Qt.Key_Menu:
             self.open_menu()
+        elif key in BACK_KEYS:
+            self.go_up()   # leaves a group; does nothing on the home screen
         elif key in (Qt.Key_Home, Qt.Key_HomePage) and self.tiles:
             self.focus_area = "grid"
             self.index = 0
@@ -1037,6 +1119,8 @@ class Launcher(QWidget):
                 self.open_menu()
             elif self.tiles:
                 self.launch(self.tiles[self.index])
+        elif event.button() == Qt.BackButton:
+            self.go_up()
         else:
             super().mouseReleaseEvent(event)
 
@@ -1057,7 +1141,13 @@ class Launcher(QWidget):
         now = time.monotonic()
         if now - self.last_launch < LAUNCH_DEBOUNCE:
             return
-        self.last_launch = now
+        self.last_launch = now   # also guards group changes, so a double-press can't open the first app inside
+        if tile.is_back:
+            self.go_up()
+            return
+        if tile.is_group:
+            self.enter_group(tile)
+            return
         app = tile.app
         if app.get("command"):
             command = app["command"]

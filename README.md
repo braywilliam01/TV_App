@@ -57,3 +57,23 @@ apps:
 ```
 
 Put your own icon images in `~/.config/tv-launcher/icons/`. Without an icon, the tile shows the first letter.
+
+### Groups (secondary screens)
+
+Give an entry its own `apps:` list instead of a `command:` and it becomes a group tile. Opening it shows a second
+screen with those apps. Return with the remote's Back button or the **‹ Back** tile. Groups can contain groups.
+
+```yaml
+apps:
+  - name: Games
+    icon: icons/games.png
+    apps:
+      - name: Steam
+        command: steam steam://open/bigpicture
+      - name: Arcade            # a group inside a group
+        apps:
+          - name: RetroDECK
+            command: flatpak run net.retrodeck.retrodeck
+```
+
+![Inside a group](screenshots/group.png)
