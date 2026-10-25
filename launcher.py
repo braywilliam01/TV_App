@@ -13,6 +13,7 @@ Keys:  arrows move, Enter/Space/OK open, Home jumps to first tile,
 import hashlib
 import math
 import os
+import random
 import re
 import shlex
 import shutil
@@ -22,8 +23,8 @@ import time
 from pathlib import Path
 
 import yaml
-from PySide6.QtCore import (QDateTime, QFileSystemWatcher, QObject, QPoint, QPointF, QRect, QRectF, QRegularExpression,
-                            QSize, Qt, QTimer, QUrl, Signal)
+from PySide6.QtCore import (QDateTime, QEvent, QFileSystemWatcher, QObject, QPoint, QPointF, QRect, QRectF,
+                            QRegularExpression, QSize, Qt, QTimer, QUrl, Signal)
 from PySide6.QtNetwork import (QLocalServer, QLocalSocket, QNetworkAccessManager, QNetworkReply,
                                QNetworkRequest)
 from PySide6.QtGui import (QColor, QCursor, QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
@@ -52,7 +53,13 @@ DEFAULTS = {
     "shutdown_command": "systemctl poweroff",
     "restart_command": "systemctl reboot",
     "sleep_command": "systemctl suspend",
+    "screensaver_minutes": 0,        # minutes of inactivity before the screensaver starts; 0 turns it off
+    "screensaver_interval": 8,       # seconds each image is shown
+    "screensaver_source": "bundled", # "bundled" (a free rotating image set) or "folder"
+    "screensaver_folder": "",        # used when screensaver_source is "folder"
 }
+SCREENSAVER_CHECK_INTERVAL = 5_000   # ms; how often idle time is checked
+SCREENSAVER_BUNDLED_IMAGES = [f"https://picsum.photos/seed/tvapp{i}/1920/1080" for i in range(1, 17)]
 SETTING_KEYS = set(DEFAULTS) | set(COLOR_KEYS)
 APP_KEYS = {"name", "command", "url", "action", "icon"}
 ACTIONS = {"minimize": "hide the launcher and show the desktop"}   # built-in `action:` values
@@ -140,6 +147,23 @@ def resolve_settings(raw, warnings):
         if not isinstance(settings[key], bool):
             warnings.append(f"'{key}' should be true or false")
             settings[key] = DEFAULTS[key]
+
+    if isinstance(settings["screensaver_minutes"], bool) or not (
+            isinstance(settings["screensaver_minutes"], (int, float)) and settings["screensaver_minutes"] >= 0):
+        warnings.append("'screensaver_minutes' should be 0 (off) or a number of minutes")
+        settings["screensaver_minutes"] = DEFAULTS["screensaver_minutes"]
+    if isinstance(settings["screensaver_interval"], bool) or not (
+            isinstance(settings["screensaver_interval"], (int, float)) and settings["screensaver_interval"] > 0):
+        warnings.append("'screensaver_interval' should be a positive number of seconds")
+        settings["screensaver_interval"] = DEFAULTS["screensaver_interval"]
+    source = str(settings["screensaver_source"]).lower()
+    if source not in ("bundled", "folder"):
+        warnings.append(f"Unknown screensaver_source '{settings['screensaver_source']}'. Options: bundled, folder")
+        source = "bundled"
+    settings["screensaver_source"] = source
+    if source == "folder" and settings["screensaver_minutes"] and not Path(
+            str(settings["screensaver_folder"] or "")).expanduser().is_dir():
+        warnings.append(f"screensaver_folder '{settings['screensaver_folder']}' isn't a folder")
     return settings
 
 
@@ -914,6 +938,114 @@ class EditorOverlay(QWidget):
             super().keyPressEvent(event)
 
 
+# ---- screensaver ---------------------------------------------------------------
+
+class ScreensaverOverlay(QWidget):
+    """Fullscreen idle slideshow. Any key press, click or pointer move dismisses it."""
+
+    def __init__(self, launcher):
+        super().__init__(launcher)
+        self.launcher = launcher
+        self.setObjectName("screensaver")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setMouseTracking(True)
+
+        self.label = QLabel(self, alignment=Qt.AlignCenter)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.label)
+
+        self.images = []      # Paths (folder mode) or URLs (bundled mode)
+        self.order = []       # shuffled indexes into self.images
+        self.pos = 0
+        self.pixmap = None
+        self.timer = QTimer(self, timeout=self.next_image)
+        launcher.web_icons.loaded.connect(self._web_loaded)
+        launcher.web_icons.failed.connect(self._web_failed)
+        self.hide()
+
+    def start(self):
+        settings = self.launcher.settings
+        if settings["screensaver_source"] == "folder":
+            folder = Path(str(settings["screensaver_folder"] or "")).expanduser()
+            self.images = sorted(p for p in folder.glob("*")
+                                 if p.suffix.lower() in IMAGE_SUFFIXES) if folder.is_dir() else []
+        else:
+            self.images = list(SCREENSAVER_BUNDLED_IMAGES)
+        if not self.images:
+            return
+        self.order = list(range(len(self.images)))
+        random.shuffle(self.order)
+        self.pos = 0
+        self.setGeometry(self.parentWidget().rect())
+        self.show()
+        self.raise_()
+        self.setFocus()
+        QApplication.setOverrideCursor(Qt.BlankCursor)
+        self.show_image()
+        self.timer.start(int(settings["screensaver_interval"] * 1000))
+
+    def current_spec(self):
+        return self.images[self.order[self.pos]]
+
+    def show_image(self):
+        spec = self.current_spec()
+        if isinstance(spec, Path):
+            pix = QPixmap(str(spec))
+            self.set_pixmap(None if pix.isNull() else pix)
+        else:
+            self.set_pixmap(self.launcher.web_icons.get(str(spec)))   # None while it downloads
+
+    def set_pixmap(self, pixmap):
+        self.pixmap = pixmap
+        self.rescale()
+
+    def rescale(self):
+        if self.pixmap:
+            self.label.setPixmap(self.pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            self.label.clear()
+
+    def next_image(self):
+        if not self.order:
+            return
+        self.pos = (self.pos + 1) % len(self.order)
+        self.show_image()
+
+    def _web_loaded(self, url, pixmap):
+        if self.isVisible() and self.images and not isinstance(self.current_spec(), Path) \
+                and str(self.current_spec()) == url:
+            self.set_pixmap(pixmap)
+
+    def _web_failed(self, url, _reason):
+        if self.isVisible() and self.images and not isinstance(self.current_spec(), Path) \
+                and str(self.current_spec()) == url:
+            self.next_image()   # skip the broken one rather than sit on a blank frame
+
+    def dismiss(self):
+        if not self.isVisible():
+            return
+        self.timer.stop()
+        QApplication.restoreOverrideCursor()
+        self.hide()
+        self.launcher.last_input = time.monotonic()
+        self.launcher.setFocus()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.rescale()
+
+    def keyPressEvent(self, event):
+        self.dismiss()
+
+    def mousePressEvent(self, event):
+        self.dismiss()
+
+    def mouseMoveEvent(self, event):
+        self.dismiss()
+
+
 # ---- main window --------------------------------------------------------------
 
 class Launcher(QWidget):
@@ -931,6 +1063,7 @@ class Launcher(QWidget):
         self.last_launch = 0.0
         self.pointer_mode = True
         self.anchor = QPoint()
+        self.last_input = time.monotonic()
 
         self.setWindowTitle("TV Launcher")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -960,15 +1093,19 @@ class Launcher(QWidget):
         self.web_icons.failed.connect(self.icon_failed)
         self.menu = MenuOverlay(self)
         self.editor = EditorOverlay(self)
+        self.screensaver = ScreensaverOverlay(self)
 
         self.clock_timer = QTimer(self, timeout=self.update_clock, interval=15_000)
         self.status_timer = QTimer(self, singleShot=True, timeout=lambda: self.status.setText(""))
         self.pointer_timer = QTimer(self, timeout=self.check_pointer, interval=100)
+        self.idle_timer = QTimer(self, timeout=self.check_idle, interval=SCREENSAVER_CHECK_INTERVAL)
+        self.idle_timer.start()
 
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(lambda _: QTimer.singleShot(300, self.reload))
 
         QShortcut(QKeySequence("Ctrl+Q"), self, activated=QApplication.quit)
+        QApplication.instance().installEventFilter(self)
         self.reload()
 
     # ---- config ---------------------------------------------------------------
@@ -1102,6 +1239,8 @@ class Launcher(QWidget):
                                   padding: 10px 22px; border: 3px solid transparent; border-radius: 10px; }}
             QPushButton#button:focus, QPushButton#button:hover {{ border-color: {s['accent']}; }}
             QPushButton#button:disabled {{ color: {muted_css}; }}
+
+            QWidget#screensaver {{ background: #000000; }}
         """)
         side = int(h * 0.04 * 1.9)
         self.gear.setFixedSize(side, side)
@@ -1136,6 +1275,8 @@ class Launcher(QWidget):
         super().resizeEvent(event)
         self.apply_style()
         self.editor.place()
+        if self.screensaver.isVisible():
+            self.screensaver.setGeometry(self.rect())
         QTimer.singleShot(0, self.layout_tiles)   # let the grid widget get its new size first
 
     # ---- navigation -----------------------------------------------------------
@@ -1216,6 +1357,22 @@ class Launcher(QWidget):
             self.pointer_mode = True
             self.pointer_timer.stop()
             QApplication.restoreOverrideCursor()
+
+    # ---- screensaver ------------------------------------------------------
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.KeyPress, QEvent.MouseButtonPress, QEvent.MouseMove):
+            self.last_input = time.monotonic()
+        return super().eventFilter(obj, event)
+
+    def check_idle(self):
+        minutes = self.settings["screensaver_minutes"]
+        if not minutes or self.screensaver.isVisible() or self.menu.isVisible() or self.editor.isVisible():
+            return
+        if not self.isActiveWindow():
+            return   # another app has focus; don't steal it back
+        if time.monotonic() - self.last_input >= minutes * 60:
+            self.screensaver.start()
 
     def hover(self, tile):
         if self.pointer_mode and tile in self.tiles:

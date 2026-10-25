@@ -83,6 +83,26 @@ Put local images in `~/.config/tv-launcher/icons/`. Web images download in the b
 `~/.cache/tv-launcher/icons/`, so they work offline afterwards. Delete that folder to fetch fresh copies.
 A broken link or a non-image just shows the letter and a warning; Settings > Reload apps retries it.
 
+### Screensaver (optional)
+
+After a set number of idle minutes on the home screen, the launcher can fade into a fullscreen slideshow.
+Any key, click, or pointer move brings the launcher back.
+
+```yaml
+settings:
+  screensaver_minutes: 10          # idle minutes before it starts; 0 (default) turns it off
+  screensaver_interval: 8          # seconds each image is shown
+  screensaver_source: bundled      # "bundled" (a free rotating photo set) or "folder"
+  screensaver_folder: "~/Pictures" # used when screensaver_source is "folder"
+```
+
+`bundled` needs no setup and downloads a rotating set of free stock photos in the background (cached for
+offline use afterwards, same as web icons). `folder` shows your own images instead — point it at any folder
+and it rotates through everything inside (png/jpg/jpeg/webp/gif/bmp/ico).
+
+The screensaver only kicks in while the launcher itself is the active window, so it won't interrupt
+whatever you're actually watching or playing in another app.
+
 ### Groups (secondary screens)
 
 Give an entry its own `apps:` list instead of a `command:` and it becomes a group tile. Opening it shows a second

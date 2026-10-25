@@ -39,6 +39,12 @@ settings:
   # restart_command: systemctl reboot
   # sleep_command: systemctl suspend
 
+  # Optional: idle screensaver. Any key, click or pointer move dismisses it.
+  # screensaver_minutes: 10          # minutes of inactivity before it starts; 0 (default) turns it off
+  # screensaver_interval: 8          # seconds each image is shown
+  # screensaver_source: bundled      # "bundled" (a free rotating photo set) or "folder"
+  # screensaver_folder: "~/Pictures" # used when screensaver_source is "folder"
+
 apps:
   - name: Kodi
     command: flatpak run tv.kodi.Kodi
