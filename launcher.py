@@ -75,6 +75,7 @@ BACK_KEYS = {Qt.Key_Escape, Qt.Key_Back, Qt.Key_Backspace}
 MOVE_KEYS = {Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0), Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1)}
 POINTER_WAKE_DISTANCE = 40   # px the pointer must move before hover takes over from the D-pad
 LAUNCH_DEBOUNCE = 1.5        # seconds; stops a double-press opening an app twice
+MOUSE_IDLE_HIDE = 10         # seconds; blank a visible pointer once it's sat still this long
 
 
 # ---- config -------------------------------------------------------------------
@@ -1100,6 +1101,10 @@ class Launcher(QWidget):
         self.pointer_timer = QTimer(self, timeout=self.check_pointer, interval=100)
         self.idle_timer = QTimer(self, timeout=self.check_idle, interval=SCREENSAVER_CHECK_INTERVAL)
         self.idle_timer.start()
+        self.mouse_idle_anchor = QCursor.pos()
+        self.mouse_idle_since = time.monotonic()
+        self.mouse_idle_timer = QTimer(self, timeout=self.check_mouse_idle, interval=1000)
+        self.mouse_idle_timer.start()
 
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(lambda _: QTimer.singleShot(300, self.reload))
@@ -1357,6 +1362,21 @@ class Launcher(QWidget):
             self.pointer_mode = True
             self.pointer_timer.stop()
             QApplication.restoreOverrideCursor()
+
+    # Hides a visible, unused pointer after MOUSE_IDLE_HIDE seconds. Uses the same
+    # jitter-tolerant distance check as the D-pad/air-mouse wake-up above, so an air
+    # mouse sitting on a table doesn't keep resetting the clock on its own wobble.
+    def check_mouse_idle(self):
+        if not self.pointer_mode:
+            self.mouse_idle_anchor = QCursor.pos()
+            self.mouse_idle_since = time.monotonic()
+            return
+        pos = QCursor.pos()
+        if (pos - self.mouse_idle_anchor).manhattanLength() > POINTER_WAKE_DISTANCE:
+            self.mouse_idle_anchor = pos
+            self.mouse_idle_since = time.monotonic()
+        elif time.monotonic() - self.mouse_idle_since >= MOUSE_IDLE_HIDE:
+            self.enter_dpad_mode()
 
     # ---- screensaver ------------------------------------------------------
 
