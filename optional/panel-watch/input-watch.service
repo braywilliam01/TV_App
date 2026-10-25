@@ -1,0 +1,11 @@
+[Unit]
+Description=Track real keyboard/mouse/touch activity timestamps (for panel-watch)
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/local/bin/input-watch.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
