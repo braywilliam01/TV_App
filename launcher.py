@@ -20,7 +20,6 @@ import random
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -1222,7 +1221,6 @@ class Launcher(QWidget):
         self.cols = 1
         self.focus_area = "grid"   # or "gear"
         self.last_launch = 0.0
-        self.browser_process = None   # the one shared url: tile browser instance, if any is running
         self.pointer_mode = True
         self.anchor = QPoint()
         self.last_input = time.monotonic()
@@ -1619,16 +1617,16 @@ class Launcher(QWidget):
         invocation would, so without this, old instances pile up unkilled forever --
         and since Wayland doesn't let a background window steal focus back, picking
         the same or another url: tile again just looks like nothing happened while
-        the old one sits hidden behind whatever's on top. Killing the previous
-        instance's whole process group (it was started with start_new_session=True)
-        before launching the next one keeps exactly one browser window alive."""
-        proc = self.browser_process
-        if proc and proc.poll() is None:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-        self.browser_process = None
+        the old one sits hidden behind whatever's on top.
+
+        This kills *any* running kiosk-browser process system-wide, by pattern match,
+        rather than just one this launcher process remembers starting -- tracking a
+        single Popen handle isn't enough, because restarting the launcher itself (an
+        update, a crash) forgets about a browser instance that's still very much
+        alive, letting a second one pile up right alongside it next time a url: tile
+        opens. "--kiosk" is specific to how this launcher always invokes the browser,
+        so nothing else on this kind of kiosk setup should ever match it."""
+        subprocess.run(["pkill", "-f", "--", "--kiosk"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def launch(self, tile):
         now = time.monotonic()
@@ -1650,11 +1648,8 @@ class Launcher(QWidget):
         else:
             self.close_browser()
             command = to_argv(self.settings["browser"]) + [str(app["url"])]
-        proc = self.run(command, app["name"])
-        if proc:
+        if self.run(command, app["name"]):
             self.show_status(f"Opening {app['name']}…")
-            if not app.get("command"):
-                self.browser_process = proc
 
     # ---- settings menu --------------------------------------------------------
 
