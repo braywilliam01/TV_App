@@ -65,7 +65,8 @@ APP_KEYS = {"name", "command", "url", "action", "icon"}
 ACTIONS = {"minimize": "hide the launcher and show the desktop"}   # built-in `action:` values
 GROUP_KEYS = {"name", "icon", "apps"}
 BACK_ITEM = {"name": "Back", "_back": True}   # first tile on every group screen
-IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".bmp", ".ico"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".bmp", ".ico", ".heic", ".heif"}
+HEIF_SUFFIXES = {".heic", ".heif"}   # not natively decodable by Qt; needs the pillow-heif fallback below
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "tv-launcher" / "icons"
 MAX_ICON_BYTES = 5 * 1024 * 1024
 OK_COLOR, WARN_COLOR, ERROR_COLOR = "#4cd480", "#ffb84d", "#ff6b6b"
@@ -334,6 +335,29 @@ def write_config(path, text):
     os.replace(tmp, path)
 
 
+def load_local_image(path):
+    """Load an image file as a QPixmap. Falls back to Pillow+libheif for HEIC/HEIF,
+    which Qt can't decode on its own (that's how iPhones save photos by default)."""
+    pix = QPixmap(str(path))
+    if not pix.isNull():
+        return pix
+    if path.suffix.lower() in HEIF_SUFFIXES:
+        try:
+            import io
+            import pillow_heif
+            from PIL import Image
+            pillow_heif.register_heif_opener()
+            with Image.open(path) as img:
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="PNG")
+            pix = QPixmap()
+            if pix.loadFromData(buf.getvalue()):
+                return pix
+        except Exception:
+            pass
+    return None
+
+
 def load_icon(spec, base_dir):
     """Icon can be an image path (relative to the YAML) or a theme icon name."""
     if not spec:
@@ -342,8 +366,7 @@ def load_icon(spec, base_dir):
     if not path.is_absolute():
         path = base_dir / path
     if path.is_file():
-        pix = QPixmap(str(path))
-        return None if pix.isNull() else pix
+        return load_local_image(path)
     icon = QIcon.fromTheme(str(spec))   # e.g. "tv.kodi.Kodi", "steam", "org.mozilla.firefox"
     if icon.isNull():
         return None
@@ -993,8 +1016,7 @@ class ScreensaverOverlay(QWidget):
     def show_image(self):
         spec = self.current_spec()
         if isinstance(spec, Path):
-            pix = QPixmap(str(spec))
-            self.set_pixmap(None if pix.isNull() else pix)
+            self.set_pixmap(load_local_image(spec))
         else:
             self.set_pixmap(self.launcher.web_icons.get(str(spec)))   # None while it downloads
 

@@ -98,7 +98,7 @@ settings:
 
 `bundled` needs no setup and downloads a rotating set of free stock photos in the background (cached for
 offline use afterwards, same as web icons). `folder` shows your own images instead — point it at any folder
-and it rotates through everything inside (png/jpg/jpeg/webp/gif/bmp/ico).
+and it rotates through everything inside (png/jpg/jpeg/webp/gif/bmp/ico, plus iPhone-style HEIC/HEIF photos).
 
 The screensaver only kicks in while the launcher itself is the active window, so it won't interrupt
 whatever you're actually watching or playing in another app.

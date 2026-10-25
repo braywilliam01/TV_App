@@ -13,7 +13,7 @@ DESKTOP="$HOME/.local/share/applications/tv-launcher.desktop"
 echo "Setting up Python environment (first run downloads Qt, ~100 MB)..."
 mkdir -p "$APP_DIR"
 [ -x "$APP_DIR/venv/bin/python" ] || python3 -m venv "$APP_DIR/venv"
-"$APP_DIR/venv/bin/pip" install --quiet --upgrade pip PySide6 PyYAML
+"$APP_DIR/venv/bin/pip" install --quiet --upgrade pip PySide6 PyYAML pillow-heif
 
 cp "$SRC/launcher.py" "$APP_DIR/launcher.py"
 
