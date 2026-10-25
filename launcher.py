@@ -86,6 +86,7 @@ BACK_KEYS = {Qt.Key_Escape, Qt.Key_Back, Qt.Key_Backspace}
 MOVE_KEYS = {Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0), Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1)}
 MOVE_KEY_FOR_DIRECTION = {v: k for k, v in MOVE_KEYS.items()}   # (dx, dy) -> Qt key, for the gamepad
 POINTER_WAKE_DISTANCE = 40   # px the pointer must move before hover takes over from the D-pad
+SCREEN_MARGIN = 0.025        # fraction of width/height kept clear of the true edge (TV overscan)
 LAUNCH_DEBOUNCE = 1.5        # seconds; stops a double-press opening an app twice
 MOUSE_IDLE_HIDE = 10         # seconds; blank a visible pointer once it's sat still this long
 
@@ -1371,6 +1372,8 @@ class Launcher(QWidget):
     def apply_style(self):
         s = self.settings
         h = max(self.height(), 480)
+        self.layout().setContentsMargins(int(self.width() * SCREEN_MARGIN), int(self.height() * SCREEN_MARGIN),
+                                         int(self.width() * SCREEN_MARGIN), int(self.height() * SCREEN_MARGIN))
         muted = QColor(s["text"])
         muted.setAlpha(150)
         muted_css = f"rgba({muted.red()}, {muted.green()}, {muted.blue()}, 0.6)"
