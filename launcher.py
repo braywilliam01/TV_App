@@ -20,6 +20,7 @@ import random
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -1220,6 +1221,7 @@ class Launcher(QWidget):
         self.cols = 1
         self.focus_area = "grid"   # or "gear"
         self.last_launch = 0.0
+        self.browser_process = None   # the one shared url: tile browser instance, if any is running
         self.pointer_mode = True
         self.anchor = QPoint()
         self.last_input = time.monotonic()
@@ -1600,13 +1602,30 @@ class Launcher(QWidget):
     def run(self, command, name):
         try:
             argv = to_argv(command)
-            subprocess.Popen(argv, start_new_session=True, cwd=Path.home(),
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
+            proc = subprocess.Popen(argv, start_new_session=True, cwd=Path.home(),
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
         except (OSError, ValueError, IndexError) as e:
             self.show_status(f"Couldn't open {name}: {e}", level="error")
-            return False
-        return True
+            return None
+        return proc
+
+    def close_browser(self):
+        """All url: tiles share settings.browser, launched fresh each time. A plain
+        `firefox --kiosk` doesn't reuse an existing window the way a normal browser
+        invocation would, so without this, old instances pile up unkilled forever --
+        and since Wayland doesn't let a background window steal focus back, picking
+        the same or another url: tile again just looks like nothing happened while
+        the old one sits hidden behind whatever's on top. Killing the previous
+        instance's whole process group (it was started with start_new_session=True)
+        before launching the next one keeps exactly one browser window alive."""
+        proc = self.browser_process
+        if proc and proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        self.browser_process = None
 
     def launch(self, tile):
         now = time.monotonic()
@@ -1626,9 +1645,13 @@ class Launcher(QWidget):
         if app.get("command"):
             command = app["command"]
         else:
+            self.close_browser()
             command = to_argv(self.settings["browser"]) + [str(app["url"])]
-        if self.run(command, app["name"]):
+        proc = self.run(command, app["name"])
+        if proc:
             self.show_status(f"Opening {app['name']}…")
+            if not app.get("command"):
+                self.browser_process = proc
 
     # ---- settings menu --------------------------------------------------------
 
