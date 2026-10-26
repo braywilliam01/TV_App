@@ -8,7 +8,7 @@ back, Start for Settings) -- optional, needs the `pysdl2` package and a
 system libSDL2; silently does nothing without either.
 
 Usage: launcher.py [path/to/apps.yaml]
-Keys:  arrows move, Enter/Space/OK open, Home jumps to first tile,
+Keys:  arrows move, Enter/Space/OK open, Home (or Ctrl+H) jumps to first tile,
        Up from the top row (or the Menu key) reaches Settings,
        Back/Esc leaves a group (and does nothing on the home screen),
        F5 reloads the YAML, Ctrl+Q quits.
@@ -1270,6 +1270,8 @@ class Launcher(QWidget):
         self.watcher.fileChanged.connect(lambda _: QTimer.singleShot(300, self.reload))
 
         QShortcut(QKeySequence("Ctrl+Q"), self, activated=QApplication.quit)
+        # Same as the remote's Home button, for keyboards (e.g. a K900) with no easy Home key.
+        QShortcut(QKeySequence("Ctrl+H"), self, activated=self.go_home)
         QApplication.instance().installEventFilter(self)
         self.reload()
 
@@ -1453,6 +1455,12 @@ class Launcher(QWidget):
             tile.set_focused(self.focus_area == "grid" and i == self.index)
         self.gear.set_focused(self.focus_area == "gear")
 
+    def go_home(self):
+        if self.tiles:
+            self.focus_area = "grid"
+            self.index = 0
+            self.refresh_focus()
+
     def move_focus(self, dx, dy):
         if self.focus_area == "gear":
             if (dy > 0 or dx < 0) and self.tiles:
@@ -1491,10 +1499,8 @@ class Launcher(QWidget):
             self.open_menu()
         elif key in BACK_KEYS:
             self.go_up()   # leaves a group; does nothing on the home screen
-        elif key in (Qt.Key_Home, Qt.Key_HomePage) and self.tiles:
-            self.focus_area = "grid"
-            self.index = 0
-            self.refresh_focus()
+        elif key in (Qt.Key_Home, Qt.Key_HomePage):
+            self.go_home()
         elif key == Qt.Key_F5:
             self.reload()
             self.show_status("Reloaded")

@@ -27,7 +27,7 @@ Nothing needs root; everything installs into your home folder.
 | OK / Enter | Open app |
 | Up from the top row, or Menu key | Settings (gear, top right) |
 | Back / Esc | Close menus (does nothing on the home screen) |
-| Home | Jump to first tile |
+| Home (or Ctrl+H) | Jump to first tile |
 | Ctrl+Q | Quit |
 
 Pointing and clicking with the air mouse works too. After using the D-pad the pointer hides, so air-mouse wobble
