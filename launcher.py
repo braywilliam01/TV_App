@@ -1456,6 +1456,7 @@ class Launcher(QWidget):
         self.gear.set_focused(self.focus_area == "gear")
 
     def go_home(self):
+        self.close_browser()   # otherwise whatever was playing (Twitch/Kick/etc.) just keeps playing, unseen
         if self.tiles:
             self.focus_area = "grid"
             self.index = 0
